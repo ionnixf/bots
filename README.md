@@ -7,7 +7,8 @@ with a configurable number of concurrent join attempts.
 The browser runs headless by default. Camera and microphone permissions are
 denied before navigation, audio output is muted, and image loading is blocked.
 Guest names are randomly selected in English by default. Use
-`--name-language ru` for Russian names with matching surname gender.
+`--name-language ru` for Russian names with matching surname gender, or pass
+`--name` to use one specified name for every guest.
 
 ## Requirements
 
@@ -66,11 +67,21 @@ python telemost.py --name-language ru
 python telemost.py --name-language en
 ```
 
+Use the same specified name for every guest:
+
+```bash
+python telemost.py --count 15 --name 'Общий гость'
+```
+
+Omit `--name` to return to random names. `--name-language` only affects the
+random-name mode.
+
 | Option | Default | Description |
 | --- | --- | --- |
 | `url` | Saved URL in the script | Meeting to join. |
 | `-n`, `--count` | `15` | Total guest sessions. |
 | `--name-language` | `en` | Guest name language: `ru` or `en`. |
+| `--name` | Random names | Use the same specified name for every guest session. |
 | `--workers` | `3` | Maximum concurrent join attempts. Use `1` for sequential joins. |
 | `--delay` | `0` | Minimum interval between starting join attempts, in seconds. |
 | `--timeout` | `30` | Browser launch and per-action timeout, in seconds; not a total run limit. |

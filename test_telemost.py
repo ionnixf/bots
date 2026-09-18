@@ -62,5 +62,23 @@ class ParallelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(contexts, [])
 
 
+class GuestNameTests(unittest.TestCase):
+    def test_random_name_is_generated_when_name_is_not_set(self):
+        args = app.parse_args(["--name-language", "ru"])
+        with patch.object(app, "random_name", return_value="Иван Иванов") as generate:
+            self.assertEqual(app.guest_name(args), "Иван Иванов")
+        generate.assert_called_once_with("ru")
+
+    def test_configured_name_is_shared_without_random_generation(self):
+        args = app.parse_args(["--name", "  Общий гость  "])
+        with patch.object(app, "random_name") as generate:
+            self.assertEqual(app.guest_name(args), "Общий гость")
+        generate.assert_not_called()
+
+    def test_empty_configured_name_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            app.parse_args(["--name", "   "])
+
+
 if __name__ == "__main__":
     unittest.main()

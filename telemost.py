@@ -88,6 +88,13 @@ def random_name(language: str = "en") -> str:
     return f"{random.choice(first_names)} {random.choice(last_names)}"
 
 
+def guest_name(args) -> str:
+    """Return the shared name when configured, otherwise generate one."""
+    if args.name is not None:
+        return args.name
+    return random_name(args.name_language)
+
+
 # Preserve matching of both English and Russian Telemost UI labels.
 CONTINUE_BUTTONS: tuple[Locator, ...] = (
     ("css selector", "button[class*='continueInBrowserButton_']"),
@@ -134,6 +141,13 @@ def non_negative_float(value: str) -> float:
     return number
 
 
+def non_empty_name(value: str) -> str:
+    name = value.strip()
+    if not name:
+        raise argparse.ArgumentTypeError("must not be empty")
+    return name
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Join a Telemost meeting with isolated, concurrent Playwright guest sessions."
@@ -155,7 +169,12 @@ def parse_args(argv=None):
         "--name-language",
         choices=("ru", "en"),
         default="en",
-        help="language of generated guest names (default: en)",
+        help="language of random guest names (default: en)",
+    )
+    parser.add_argument(
+        "--name",
+        type=non_empty_name,
+        help="use this same guest name for every session instead of random names",
     )
     parser.add_argument(
         "--workers",
@@ -221,7 +240,7 @@ async def join_guest(browser, args, index, contexts) -> bool:
     joined = False
     stage = "context creation"
     started = time.monotonic()
-    name = random_name(args.name_language)
+    name = guest_name(args)
     try:
         log(f"Creating isolated session: {name}...", index)
         context = await browser.new_context(
