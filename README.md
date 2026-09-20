@@ -1,7 +1,7 @@
-# Telemost
+# Meeting Guest Launcher — Telemost & Kontur.Talk
 
-A small Python CLI that opens multiple guest sessions in a Yandex Telemost
-meeting using Playwright. One Chromium browser hosts isolated guest contexts,
+A single Python CLI for Yandex Telemost and Kontur.Talk (kTalk), using
+Playwright. One Chromium browser hosts isolated guest contexts,
 with a configurable number of concurrent join attempts.
 
 The browser runs headless by default. Camera and microphone permissions are
@@ -29,20 +29,33 @@ python -m playwright install chromium
 ```
 
 Playwright downloads its browser separately from the Python package. No
-Selenium or ChromeDriver installation is needed. On Fedora, the installer may
-download a fallback Linux build; local browser checks passed on this machine.
+Selenium or ChromeDriver installation is needed. If Playwright is missing from
+the current interpreter, the launcher retries with the project's
+`.venv/bin/python` when available, preserving the selected service.
 
 ## Usage
 
-Join a meeting with 15 guests, allowing three join attempts at a time:
+Choose the service explicitly. Both commands accept the same options:
+
+```bash
+python main.py --service telemost 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --count 15 --workers 3
+python main.py --service ktalk 'https://YOUR_DOMAIN.ktalk.ru/YOUR_EVENT' --count 15 --workers 3
+```
+
+Convenience entry points select their respective service by default:
 
 ```bash
 python telemost.py 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --count 15 --workers 3
+python ktalk.py 'https://YOUR_DOMAIN.ktalk.ru/YOUR_EVENT' --count 15 --workers 3
 ```
 
-Running `python telemost.py` without a URL uses `DEFAULT_MEETING_URL` in the
-script. The previous `telemost_playwright.py` entry point has been consolidated
-into `telemost.py`.
+The URL is required; `main.py` also requires `--service`. Missing or invalid
+arguments are rejected before launching the browser. Pass the full guest URL.
+All examples below also work with `ktalk.py` and a kTalk event URL.
+
+Migration: the former kTalk-only copy used `telemost.py` as an alias for
+kTalk. In this combined project, `telemost.py` means Yandex Telemost;
+use `ktalk.py` or `main.py --service ktalk` for Kontur.Talk.
 
 Successful sessions stay open after joining. Press **Enter** or **Ctrl+C** to
 close them. Ctrl+C cancels pending work and closes the browser and its contexts.
@@ -55,7 +68,7 @@ python telemost.py 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --count 2 --cl
 To inspect the browser visually:
 
 ```bash
-python telemost.py --headed --load-images
+python telemost.py 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --headed --load-images
 ```
 
 ## Options
@@ -63,14 +76,14 @@ python telemost.py --headed --load-images
 Choose the language of guest names:
 
 ```bash
-python telemost.py --name-language ru
-python telemost.py --name-language en
+python telemost.py 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --name-language ru
+python telemost.py 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --name-language en
 ```
 
 Use the same specified name for every guest:
 
 ```bash
-python telemost.py --count 15 --name 'Общий гость'
+python telemost.py 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --count 15 --name 'Общий гость'
 ```
 
 Omit `--name` to return to random names. `--name-language` only affects the
@@ -78,7 +91,8 @@ random-name mode.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `url` | Saved URL in the script | Meeting to join. |
+| `--service` | Required in `main.py` | `telemost` or `ktalk`; convenience scripts provide a default. |
+| `url` | Required | Meeting to join. |
 | `-n`, `--count` | `15` | Total guest sessions. |
 | `--name-language` | `en` | Guest name language: `ru` or `en`. |
 | `--name` | Random names | Use the same specified name for every guest session. |
@@ -90,7 +104,7 @@ random-name mode.
 | `--chrome-binary` | Playwright browser | Optional path to a Chrome/Chromium executable. |
 | `--close` | Off | Close sessions after all join attempts finish. |
 
-Use `python telemost.py --help` for command-line help. The old Selenium-only
+Use `python main.py --help` for command-line help. The old Selenium-only
 `--webdriver-url` option has been removed.
 
 ## Logs and failures
@@ -100,7 +114,7 @@ creation, navigation, form interaction, warnings, errors, and cleanup. Output
 is flushed immediately, including when redirected to a file.
 
 Failed guests are closed without stopping other join attempts. When possible,
-a screenshot is saved to `errors/playwright-guest-N.png`; a later failure for
+a screenshot is saved to `errors/SERVICE-guest-N.png`; a later failure for
 the same guest number overwrites it. Generated screenshots and Python/tool
 caches are ignored by Git.
 
@@ -124,15 +138,21 @@ Headless mode does not disable incoming WebRTC media. A browser crash affects
 all guest contexts.
 
 The script handles both English and Russian meeting UI labels. Its own logs,
-help text and documentation are English; guest names can be English or Russian. Localized
-selector strings are represented with Unicode escapes in the source.
+help text and documentation are English; guest names can be English or Russian.
+Telemost handles the optional "Continue in browser" screen and device warnings.
+kTalk uses the anonymous authorization form and its stable test IDs.
 
 Disappearance of the join form is used as a completion signal. It does not
-prove admission by the organizer or reception of audio/video. Local checks
-cover concurrent contexts, storage isolation, denied device permissions,
-image blocking, and cleanup; real-meeting behavior still requires validation.
+prove admission by the organizer or reception of audio/video. Unit tests cover
+service selection, mocked join flows, concurrency, cancellation, and failure
+cleanup. Real-meeting behavior still requires validation.
 
 ## Development
+
+- `main.py`: unified command; `telemost.py` and `ktalk.py`: convenience commands.
+- `launcher.py`: shared arguments, names, browser lifecycle, workers, and cleanup.
+- `services.py`: provider-specific selectors.
+- `test_*.py`: offline regression tests.
 
 ```bash
 python -m unittest -v
@@ -141,8 +161,8 @@ python -m unittest -v
 Optional formatting and lint checks, with Ruff installed:
 
 ```bash
-ruff check telemost.py test_telemost.py
-ruff format --check telemost.py test_telemost.py
+ruff check .
+ruff format --check .
 ```
 
 The unit tests use mocked browser operations and do not join any meeting.
