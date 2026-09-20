@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified guest launcher: choose a provider with --service."""
+"""Unified guest launcher: detect the provider from the meeting URL."""
 
 from launcher import main
 

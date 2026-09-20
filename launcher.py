@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from services import SERVICES
+from services import SERVICES, detect_service
 
 DEFAULT_COUNT = 15
 FIRST_NAMES = (
@@ -102,9 +102,7 @@ def parse_args(argv=None, *, default_service=None):
     parser.add_argument(
         "--service",
         choices=tuple(SERVICES),
-        default=default_service,
-        required=default_service is None,
-        help="meeting service",
+        help="override the meeting service (default: detect from URL)",
     )
     parser.add_argument("url", help="meeting or event URL (required)")
     parser.add_argument(
@@ -157,7 +155,14 @@ def parse_args(argv=None, *, default_service=None):
         action="store_true",
         help="close all sessions after join attempts finish",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.service = args.service or detect_service(args.url) or default_service
+    if args.service is None:
+        parser.error(
+            "cannot detect the meeting service from URL; "
+            "specify --service telemost or --service ktalk"
+        )
+    return args
 
 
 def visible_locator(page, selectors):

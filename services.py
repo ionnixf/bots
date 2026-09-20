@@ -1,8 +1,25 @@
 """Service-specific selectors for the supported meeting providers."""
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 Locator = tuple[str, str]
+
+
+def detect_service(url: str) -> str | None:
+    """Identify supported providers by URL hostname, without network requests."""
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").rstrip(".")
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if host in ("telemost.yandex.ru", "telemost.yandex.com"):
+        return "telemost"
+    if host == "ktalk.ru" or host.endswith(".ktalk.ru"):
+        return "ktalk"
+    return None
 
 
 @dataclass(frozen=True)

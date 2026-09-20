@@ -10,6 +10,35 @@ from services import SERVICES
 
 
 class SelectionTests(unittest.TestCase):
+    def test_service_detected_from_url_in_all_entry_points(self):
+        for url, expected in (
+            ("https://telemost.yandex.ru/j/test", "telemost"),
+            ("https://telemost.yandex.com/j/test", "telemost"),
+            ("https://TELEMOST.YANDEX.RU:443/j/test?x=ktalk.ru", "telemost"),
+            ("https://ktalk.ru/test", "ktalk"),
+            ("https://company.ktalk.ru/event/test", "ktalk"),
+            ("https://COMPANY.KTALK.RU./test", "ktalk"),
+        ):
+            for default in (None, "telemost", "ktalk"):
+                with self.subTest(url=url, default=default):
+                    args = launcher.parse_args([url], default_service=default)
+                    self.assertEqual(args.service, expected)
+                    self.assertEqual(args.url, url)
+
+    def test_explicit_service_overrides_detection_and_entry_point(self):
+        args = launcher.parse_args(
+            ["https://telemost.yandex.ru/j/test", "--service", "ktalk"],
+            default_service="telemost",
+        )
+        self.assertEqual(args.service, "ktalk")
+
+    def test_entry_point_default_for_custom_domains(self):
+        for service in SERVICES:
+            args = launcher.parse_args(
+                ["https://meet.example.org/test"], default_service=service
+            )
+            self.assertEqual(args.service, service)
+
     def test_explicit_service(self):
         for service in SERVICES:
             args = launcher.parse_args(["--service", service, "https://example.org"])
@@ -18,6 +47,13 @@ class SelectionTests(unittest.TestCase):
     def test_missing_or_invalid_service_is_rejected(self):
         for argv in (
             ["https://example.org"],
+            ["https://ktalk.ru.example.org/test"],
+            ["https://fakektalk.ru/test"],
+            ["https://telemost.yandex.ru.example.org/j/test"],
+            ["https://example.org/ktalk.ru?url=telemost.yandex.ru"],
+            ["https://ktalk.ru@example.org/test"],
+            ["ftp://company.ktalk.ru/test"],
+            ["https://[invalid/test"],
             ["--service", "other", "https://example.org"],
         ):
             with self.subTest(argv=argv), self.assertRaises(SystemExit) as error:

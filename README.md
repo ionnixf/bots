@@ -35,22 +35,29 @@ the current interpreter, the launcher retries with the project's
 
 ## Usage
 
-Choose the service explicitly. Both commands accept the same options:
+The service is detected automatically from the URL. Both commands accept the
+same options:
 
 ```bash
-python main.py --service telemost 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --count 15 --workers 3
-python main.py --service ktalk 'https://YOUR_DOMAIN.ktalk.ru/YOUR_EVENT' --count 15 --workers 3
+python main.py 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --count 15 --workers 3
+python main.py 'https://YOUR_DOMAIN.ktalk.ru/YOUR_EVENT' --count 15 --workers 3
 ```
 
-Convenience entry points select their respective service by default:
+Detection recognizes `telemost.yandex.ru`, `telemost.yandex.com`, `ktalk.ru`,
+and subdomains of `ktalk.ru`. For a custom domain or an explicit override, use
+`--service telemost` or `--service ktalk`.
+
+Convenience entry points also detect the service from the URL, falling back to
+their respective service for unrecognized domains:
 
 ```bash
 python telemost.py 'https://telemost.yandex.ru/j/YOUR_MEETING_ID' --count 15 --workers 3
 python ktalk.py 'https://YOUR_DOMAIN.ktalk.ru/YOUR_EVENT' --count 15 --workers 3
 ```
 
-The URL is required; `main.py` also requires `--service`. Missing or invalid
-arguments are rejected before launching the browser. Pass the full guest URL.
+The URL is required. If `main.py` cannot recognize its domain, it asks for
+`--service` before launching the browser. Pass the full guest URL, including
+`https://`.
 All examples below also work with `ktalk.py` and a kTalk event URL.
 
 Migration: the former kTalk-only copy used `telemost.py` as an alias for
@@ -91,7 +98,7 @@ random-name mode.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--service` | Required in `main.py` | `telemost` or `ktalk`; convenience scripts provide a default. |
+| `--service` | Detected from URL | Override with `telemost` or `ktalk`; convenience scripts provide a fallback for custom domains. |
 | `url` | Required | Meeting to join. |
 | `-n`, `--count` | `15` | Total guest sessions. |
 | `--name-language` | `en` | Guest name language: `ru` or `en`. |
