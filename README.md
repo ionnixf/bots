@@ -1,13 +1,3 @@
-# Meeting Guest Launcher — Telemost & Kontur.Talk
-
-Python CLI that opens isolated guest sessions in Yandex Telemost or
-Kontur.Talk (kTalk) with Playwright. One Chromium browser hosts all guests;
-`--workers` limits concurrent join attempts.
-
-The browser runs headless by default, denies camera and microphone permissions,
-mutes audio output, and blocks image requests. Guest names are random English
-names unless `--name-language ru` or `--name` is supplied.
-
 ## Installation
 
 Requires Linux, Python 3.10+, and enough memory for the active meeting pages.
