@@ -11,6 +11,7 @@ import random
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from services import SERVICES, detect_service
 
@@ -93,30 +94,50 @@ def non_empty_name(value: str) -> str:
     return name
 
 
+def meeting_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme in ("http", "https") and parsed.hostname:
+            parsed.port  # Validate an explicitly supplied port too.
+            return value
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("must be a full http:// or https:// meeting URL")
+
+
 def parse_args(argv=None, *, default_service=None):
     parser = argparse.ArgumentParser(
         description=(
             "Join Telemost or Kontur.Talk with isolated Playwright guest sessions."
-        )
+        ),
     )
     parser.add_argument(
         "--service",
         choices=tuple(SERVICES),
-        help="override the meeting service (default: detect from URL)",
+        help=(
+            "override the provider detected from URL"
+            + (
+                f"; unknown domains fall back to {default_service}"
+                if default_service
+                else ""
+            )
+        ),
     )
-    parser.add_argument("url", help="meeting or event URL (required)")
+    parser.add_argument(
+        "url", type=meeting_url, help="full http:// or https:// meeting URL"
+    )
     parser.add_argument(
         "-n",
         "--count",
         type=positive_int,
         default=DEFAULT_COUNT,
-        help="total guest sessions (default: 15)",
+        help="total guest sessions (default: %(default)s)",
     )
     parser.add_argument(
         "--name-language",
         choices=("ru", "en"),
         default="en",
-        help="language of random guest names (default: en)",
+        help="language of random guest names; ignored with --name (default: %(default)s)",
     )
     parser.add_argument(
         "--name",
@@ -127,19 +148,19 @@ def parse_args(argv=None, *, default_service=None):
         "--workers",
         type=positive_int,
         default=3,
-        help="concurrent join attempts (default: 3)",
+        help="maximum concurrent join attempts (default: %(default)s)",
     )
     parser.add_argument(
         "--delay",
         type=non_negative_float,
         default=0.0,
-        help="minimum interval between join attempts, in seconds (default: 0)",
+        help="minimum interval between starting join attempts, in seconds (default: %(default)s)",
     )
     parser.add_argument(
         "--timeout",
         type=positive_int,
         default=30,
-        help="browser launch and per-action timeout, in seconds (default: 30)",
+        help="browser launch and per-action timeout in seconds; not a total run limit (default: %(default)s)",
     )
     parser.add_argument(
         "--chrome-binary", help="optional Chrome/Chromium executable path"
@@ -378,7 +399,7 @@ def main(argv=None, *, default_service=None) -> int:
             and Path(sys.prefix).resolve() != local_venv.resolve()
         ):
             command_args = sys.argv[1:] if argv is None else list(argv)
-            log(f"Playwright is installed in {local_python}; restarting with it.")
+            log(f"Retrying with project interpreter: {local_python}.")
             os.execv(
                 str(local_python),
                 [

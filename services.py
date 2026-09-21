@@ -58,7 +58,7 @@ CONTINUE_BUTTONS: tuple[Locator, ...] = (
     ("css selector", "button[class*='continueInBrowserButton_']"),
     (
         "xpath",
-        "//button[contains(normalize-space(.), '\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435') "
+        "//button[contains(normalize-space(.), 'Продолжить в браузере') "
         "or contains(normalize-space(.), 'Continue in browser')]",
     ),
 )
@@ -70,15 +70,15 @@ TELEMOST_JOIN_BUTTONS: tuple[Locator, ...] = (
     ("css selector", "button[data-testid='enter-conference-button']"),
     (
         "xpath",
-        "//button[contains(normalize-space(.), '\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c\u0441\u044f') "
-        "or normalize-space(.)='\u041f\u0440\u043e\u0434\u043e\u043b\u0436\u0438\u0442\u044c' "
+        "//button[contains(normalize-space(.), 'Подключиться') "
+        "or normalize-space(.)='Продолжить' "
         "or contains(normalize-space(.), 'Join')]",
     ),
 )
 MEDIA_WARNING_BUTTONS: tuple[Locator, ...] = (
     (
         "xpath",
-        "//button[contains(., '\u041f\u043e\u043d\u044f\u0442\u043d\u043e') "
+        "//button[contains(., 'Понятно') "
         "or contains(., 'Got it') "
         "or normalize-space(.)='OK']",
     ),
