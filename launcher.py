@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared launcher for Telemost and Kontur.Talk guest sessions."""
+"""Shared launcher for meeting services: frame-aware, provider-neutral joining."""
 
 from __future__ import annotations
 
@@ -8,14 +8,29 @@ import asyncio
 import math
 import os
 import random
+import re
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from media import build_fake_media_args
 from services import SERVICES, detect_service
 
 DEFAULT_COUNT = 15
+
+# Join-engine pacing. Tests patch these to keep the loop instant.
+POLL_INTERVAL = 1.0
+JOIN_GRACE = 8.0
+CLICK_COOLDOWN = 4.0
+MAX_JOIN_CLICKS = 4
+DIRECT_FALLBACK_AFTER = 2
+MAX_OVERLAY_CLICKS = 6
+FRAME_TEXT_TIMEOUT_MS = 1_000
+CLICK_TIMEOUT_MS = 3_000
+SCREENSHOT_TIMEOUT_MS = 5_000
+
 FIRST_NAMES = (
     "Alex",
     "Mary",
@@ -98,7 +113,7 @@ def meeting_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
         if parsed.scheme in ("http", "https") and parsed.hostname:
-            parsed.port  # Validate an explicitly supplied port too.
+            _ = parsed.port  # Validate an explicitly supplied port too.
             return value
     except ValueError:
         pass
@@ -107,9 +122,7 @@ def meeting_url(value: str) -> str:
 
 def parse_args(argv=None, *, default_service=None):
     parser = argparse.ArgumentParser(
-        description=(
-            "Join Telemost or Kontur.Talk with isolated Playwright guest sessions."
-        ),
+        description="Join a supported meeting service with isolated Playwright guests.",
     )
     parser.add_argument(
         "--service",
@@ -160,7 +173,13 @@ def parse_args(argv=None, *, default_service=None):
         "--timeout",
         type=positive_int,
         default=30,
-        help="browser launch and per-action timeout in seconds; not a total run limit (default: %(default)s)",
+        help="browser launch and per-action timeout in seconds (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--join-timeout",
+        type=positive_int,
+        default=180,
+        help="maximum seconds spent on one guest's join form (default: %(default)s)",
     )
     parser.add_argument(
         "--chrome-binary", help="optional Chrome/Chromium executable path"
@@ -179,25 +198,155 @@ def parse_args(argv=None, *, default_service=None):
     args = parser.parse_args(argv)
     args.service = args.service or detect_service(args.url) or default_service
     if args.service is None:
-        parser.error(
-            "cannot detect the meeting service from URL; "
-            "specify --service telemost or --service ktalk"
-        )
+        choices = " or ".join(f"--service {key}" for key in SERVICES)
+        parser.error(f"cannot detect the meeting service from URL; specify {choices}")
     return args
 
 
-def visible_locator(page, selectors):
+# ---------------------------------------------------------------------------
+# Locator and frame helpers
+
+
+def visible_locator(frame, selectors):
+    """Combine locator alternatives into one visible-only locator."""
     result = None
     for by, selector in selectors:
-        locator = page.locator(f"xpath={selector}" if by == "xpath" else selector)
+        locator = frame.locator(f"xpath={selector}" if by == "xpath" else selector)
         result = locator if result is None else result.or_(locator)
-    return result.filter(visible=True)
+    return None if result is None else result.filter(visible=True)
+
+
+async def first_visible(frame, selectors):
+    """Return the first visible match in one frame, or ``None``."""
+    locator = visible_locator(frame, selectors)
+    if locator is None:
+        return None
+    candidate = locator.first
+    try:
+        return candidate if await candidate.is_visible() else None
+    except Exception:  # noqa: BLE001 - frames can detach while loading
+        # Frames can detach at any moment while a meeting page is loading.
+        return None
+
+
+def ordered_frames(page, service):
+    """Prefer embedded join frames over the outer page shell."""
+    patterns = tuple(re.compile(p) for p in service.frame_url_patterns)
+    main = page.main_frame
+    others = [frame for frame in page.frames if frame is not main]
+
+    def priority(frame):
+        url = frame.url or ""
+        return 0 if any(pattern.search(url) for pattern in patterns) else 1
+
+    others.sort(key=priority)
+    return [*others, main]
+
+
+async def find_visible_any(page, service, selectors):
+    """Search every frame, join frames first, and return a live locator."""
+    for frame in ordered_frames(page, service):
+        found = await first_visible(frame, selectors)
+        if found is not None:
+            return found
+    return None
+
+
+async def click_visible_any(page, service, selectors) -> bool:
+    found = await find_visible_any(page, service, selectors)
+    if found is None:
+        return False
+    try:
+        await found.click(timeout=CLICK_TIMEOUT_MS)
+    except Exception:  # noqa: BLE001 - the frame may be replaced
+        return False
+    return True
+
+
+@dataclass
+class JoinTarget:
+    frame: object
+    name_input: object = None
+    join_button: object = None
+
+
+async def find_join_target(page, service) -> JoinTarget | None:
+    """Find the frame that owns the guest join form.
+
+    A frame with a join button wins over a frame that only exposes a name field,
+    which keeps the outer shell from being mistaken for the guest form.
+    """
+    name_only = None
+    for frame in ordered_frames(page, service):
+        join_button = await first_visible(frame, service.join_buttons)
+        name_input = await first_visible(frame, service.name_inputs)
+        if join_button is not None:
+            return JoinTarget(frame, name_input, join_button)
+        if name_input is not None and name_only is None:
+            name_only = JoinTarget(frame, name_input, None)
+    return name_only
+
+
+async def frame_text(frame) -> str:
+    try:
+        return await frame.locator("body").inner_text(timeout=FRAME_TEXT_TIMEOUT_MS)
+    except Exception:  # noqa: BLE001 - a detached frame has no text
+        return ""
+
+
+async def page_text(page) -> str:
+    parts = []
+    for frame in page.frames:
+        text = await frame_text(frame)
+        if text:
+            parts.append(text)
+    return "\n".join(parts).casefold()
+
+
+def find_marker(markers, text: str) -> str | None:
+    for marker in markers:
+        if marker.casefold() in text:
+            return marker
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Join-engine helpers
+
+
+def with_params(url: str, params: tuple[tuple[str, str], ...]) -> str:
+    """Force query parameters while preserving every other part of the URL."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.update(params)
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+def direct_frame_url(page, service) -> str | None:
+    """Return the current guest-frame URL with forced quiet-device params."""
+    patterns = tuple(re.compile(p) for p in service.frame_url_patterns)
+    candidates = [page.url, *(frame.url for frame in page.frames)]
+    for url in candidates:
+        if url and any(pattern.search(url) for pattern in patterns):
+            return with_params(url, service.direct_frame_params)
+    return None
+
+
+async def save_error_screenshot(page, service_key: str, index: int) -> Path:
+    screenshot = (
+        Path(__file__).resolve().parent
+        / "errors"
+        / f"{service_key}-guest-{index + 1}.png"
+    )
+    screenshot.parent.mkdir(exist_ok=True)
+    await page.screenshot(path=str(screenshot), timeout=SCREENSHOT_TIMEOUT_MS)
+    return screenshot
 
 
 async def configure_context(context, load_images: bool) -> None:
-    # On Chromium, grantPermissions denies every permission absent from this
-    # list. An empty list explicitly denies camera/microphone before navigation.
-    await context.grant_permissions([])
+    # Fake capture devices satisfy camera/microphone requests, so no real
+    # hardware or permission prompt is involved.
+    await context.grant_permissions(["microphone", "camera"])
     if not load_images:
 
         async def route_request(route):
@@ -216,7 +365,17 @@ async def join_guest(browser, args, index, contexts) -> bool:
     joined = False
     stage = "context creation"
     started = time.monotonic()
+    deadline = started + args.join_timeout
     name = guest_name(args)
+    name_filled = False
+    join_clicks = 0
+    last_click = 0.0
+    overlay_clicks = 0
+    continue_clicked = False
+    mic_off_done = False
+    camera_off_done = False
+    fallback_used = False
+    form_gone_since = None
     try:
         log(f"Creating isolated session: {name}...", index)
         context = await browser.new_context(
@@ -228,71 +387,170 @@ async def join_guest(browser, args, index, contexts) -> bool:
         await configure_context(context, args.load_images)
         page = await context.new_page()
 
-        if service.warning_buttons:
-            warnings = visible_locator(page, service.warning_buttons).last
-
-            async def dismiss_warning():
-                log("Dismissing camera/microphone warning...", index)
-                await warnings.click()
-
-            await page.add_locator_handler(
-                warnings, dismiss_warning, no_wait_after=True
-            )
-
         stage = "page navigation"
         log(f"Opening {service.label}...", index)
         await page.goto(args.url, wait_until="domcontentloaded")
 
-        stage = "waiting for the join form"
-        name_input = visible_locator(page, service.name_inputs).first
-        if service.continue_buttons:
-            continuation = visible_locator(page, service.continue_buttons).first
-            await name_input.or_(continuation).first.wait_for()
-            if not await name_input.is_visible():
-                await continuation.click()
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"join form did not complete within {args.join_timeout} s"
+                )
+
+            stage = "checking the meeting page"
+            text = await page_text(page)
+
+            failure = find_marker(service.failure_markers, text)
+            if failure is not None:
+                raise RuntimeError(f"meeting page reports {failure!r}")
+
+            joined_marker = find_marker(service.joined_markers, text)
+            if joined_marker is not None:
+                joined = True
+                log(
+                    f"Joined ({joined_marker!r}) after "
+                    f"{time.monotonic() - started:.1f} s.",
+                    index,
+                )
+                return True
+
+            if service.joined_buttons:
+                controls = await find_visible_any(page, service, service.joined_buttons)
+                if controls is not None:
+                    joined = True
+                    log(
+                        f"Meeting controls detected after "
+                        f"{time.monotonic() - started:.1f} s.",
+                        index,
+                    )
+                    return True
+
+            stage = "waiting for the join form"
+            target = await find_join_target(page, service)
+
+            if target is None:
+                if join_clicks:
+                    now = time.monotonic()
+                    if form_gone_since is None:
+                        form_gone_since = now
+                    elif now - form_gone_since >= JOIN_GRACE:
+                        joined = True
+                        log(
+                            "Join form stayed closed; treating the guest as joined.",
+                            index,
+                        )
+                        return True
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
+
+            form_gone_since = None
+
+            if (
+                service.continue_buttons
+                and not continue_clicked
+                and await click_visible_any(page, service, service.continue_buttons)
+            ):
+                continue_clicked = True
                 log("Clicked 'Continue in browser'.", index)
-        else:
-            await name_input.wait_for()
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
 
-        stage = "entering guest name"
-        await name_input.fill(name)
-        # Blur commits the field in applications that update state on change.
-        await name_input.press("Tab")
-        log(f"Entered name: {name}.", index)
+            if (
+                service.overlay_buttons
+                and overlay_clicks < MAX_OVERLAY_CLICKS
+                and await click_visible_any(page, service, service.overlay_buttons)
+            ):
+                overlay_clicks += 1
+                log("Dismissed a blocking dialog.", index)
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
 
-        stage = "joining"
-        log("Clicking the join button...", index)
-        await visible_locator(page, service.join_buttons).first.click()
-        await name_input.wait_for(state="hidden")
-        joined = True
-        log(
-            f"Join form closed after {time.monotonic() - started:.1f} s.",
-            index,
-        )
-        return True
-    except Exception as exc:
+            if target.name_input is not None and not name_filled:
+                stage = "entering guest name"
+                await target.name_input.fill(name)
+                # Blur commits the field in apps that update state on change.
+                await target.name_input.press("Tab")
+                name_filled = True
+                log(f"Entered name: {name}.", index)
+
+            if (
+                service.mic_off_buttons
+                and not mic_off_done
+                and await click_visible_any(page, service, service.mic_off_buttons)
+            ):
+                mic_off_done = True
+                log("Microphone switched off.", index)
+
+            if (
+                service.camera_off_buttons
+                and not camera_off_done
+                and await click_visible_any(page, service, service.camera_off_buttons)
+            ):
+                camera_off_done = True
+                log("Camera switched off.", index)
+
+            now = time.monotonic()
+            fallback_ready = (
+                bool(service.direct_frame_params)
+                and join_clicks >= DIRECT_FALLBACK_AFTER
+                and not fallback_used
+                and target.name_input is not None
+                and now - last_click >= CLICK_COOLDOWN
+            )
+            if fallback_ready:
+                direct_url = direct_frame_url(page, service)
+                if direct_url is not None:
+                    stage = "direct join-frame navigation"
+                    log(
+                        "Embedded join form is stuck; opening it directly.",
+                        index,
+                    )
+                    await page.goto(direct_url, wait_until="domcontentloaded")
+                    fallback_used = True
+                    name_filled = False
+                    mic_off_done = False
+                    camera_off_done = False
+                    form_gone_since = None
+                    last_click = time.monotonic()
+                    continue
+                # Do not retry a fallback the page cannot provide.
+                fallback_used = True
+
+            if target.join_button is not None:
+                if join_clicks >= MAX_JOIN_CLICKS:
+                    raise RuntimeError("join button did not respond")
+                if now - last_click >= CLICK_COOLDOWN:
+                    stage = "joining"
+                    log("Clicking the join button...", index)
+                    join_clicks += 1
+                    last_click = time.monotonic()
+                    try:
+                        await target.join_button.click(timeout=CLICK_TIMEOUT_MS)
+                    except Exception as exc:  # noqa: BLE001 - retried next poll
+                        log(
+                            f"Join click failed: {type(exc).__name__}: {exc}",
+                            index,
+                        )
+
+            await asyncio.sleep(POLL_INTERVAL)
+    except Exception as exc:  # noqa: BLE001 - report any guest failure
         log(f"Error during {stage}: {type(exc).__name__}: {exc}", index)
         if page is not None:
-            screenshot = (
-                Path(__file__).resolve().parent
-                / "errors"
-                / f"{args.service}-guest-{index + 1}.png"
-            )
             try:
-                screenshot.parent.mkdir(exist_ok=True)
-                await page.screenshot(path=str(screenshot), timeout=5000)
+                screenshot = await save_error_screenshot(page, args.service, index)
                 log(f"Error screenshot: {screenshot}", index)
-            except Exception as screenshot_error:
+            except Exception as screenshot_error:  # noqa: BLE001
                 log(f"Could not save screenshot: {screenshot_error}", index)
         return False
     finally:
         if context is not None and not joined:
             try:
                 await context.close()
-            except Exception as close_error:
+            except Exception as close_error:  # noqa: BLE001
                 log(f"Could not close context: {close_error}", index)
             else:
-                contexts.remove(context)
+                if context in contexts:
+                    contexts.remove(context)
                 log("Failed session closed.", index)
 
 
@@ -347,6 +605,12 @@ async def wait_for_enter() -> None:
 async def run(args) -> int:
     from playwright.async_api import async_playwright
 
+    try:
+        media_args = build_fake_media_args()
+    except Exception as exc:  # noqa: BLE001 - media is optional
+        media_args = []
+        log(f"Could not prepare fake media: {type(exc).__name__}: {exc}")
+
     async with async_playwright() as playwright:
         log(
             f"Launching one Chromium browser: guests={args.count}, "
@@ -357,7 +621,12 @@ async def run(args) -> int:
             executable_path=args.chrome_binary,
             timeout=args.timeout * 1000,
             chromium_sandbox=True,
-            args=["--mute-audio", "--disable-notifications", "--disable-extensions"],
+            args=[
+                "--mute-audio",
+                "--disable-notifications",
+                "--disable-extensions",
+                *media_args,
+            ],
         )
         contexts = []
         started = time.monotonic()
@@ -418,7 +687,7 @@ def main(argv=None, *, default_service=None) -> int:
     except (KeyboardInterrupt, EOFError):
         log("Stopped.")
         return 130
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - top-level error report
         log(f"Error: {type(exc).__name__}: {exc}")
         return 1
 
